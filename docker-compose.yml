@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # 1. Database (PostgreSQL + PostGIS)
+  db:
+    image: postgis/postgis:15-3.4
+    container_name: geomine_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nwis_wells_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-seed the database on first boot
+      - ./historical_drilling_events.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./02_round2_upgrades.sql:/docker-entrypoint-initdb.d/02_upgrade.sql
+    restart: unless-stopped
+
+  # 2. FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: geomine_backend
+    environment:
+      # Change DB host from 127.0.0.1 to the container name 'db'
+      - DB_HOST=db
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=nwis_wells_db
+      - DB_PORT=5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      # Mount current directory to /app for live reloading during dev
+      - .:/app
+    restart: unless-stopped
+
+  # 3. Streamlit Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: geomine_dashboard
+    environment:
+      # Tell Streamlit how to reach the backend container
+      - BACKEND_URL=http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+volumes:
+  pgdata:
