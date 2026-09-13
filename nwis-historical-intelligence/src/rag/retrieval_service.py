@@ -6,44 +6,57 @@ Decoupled from LLM answer generation, dashboard UI, and persistent storage.
 
 from typing import Optional
 
+from .base_retriever import BaseRetriever
 from .document_builder import events_to_documents
 from .embeddings import EmbeddingProvider, embed_documents
 from .hybrid_retrieval import HybridRetriever
+from .pgvector_backend import PgVectorRetriever, PgVectorDatabaseClient, ingest_events_to_pgvector
 from .semantic_search import InMemorySemanticIndex
 
 
 class RAGRetrievalService:
     """
     Coordinates historical events, document building, vector embedding,
-    in-memory indexing, and hybrid retrieval.
-
-    Embeddings and semantic index are prepared once and reused across
-    subsequent queries to avoid redundant embedding API calls.
+    in-memory indexing, pgvector database indexing, and hybrid retrieval.
     """
 
     def __init__(
         self,
-        events: list[dict],
-        provider: EmbeddingProvider,
+        events: Optional[list[dict]] = None,
+        provider: Optional[EmbeddingProvider] = None,
         auto_prepare: bool = False,
+        backend: str = "in_memory",
+        retriever: Optional[BaseRetriever] = None,
+        db_client: Optional[PgVectorDatabaseClient] = None,
     ):
         """
         Initialize the RAGRetrievalService.
 
         Args:
-            events (list[dict]): Historical drilling events.
-            provider (EmbeddingProvider): Vector embedding provider.
+            events (list[dict], optional): Historical drilling events.
+            provider (EmbeddingProvider, optional): Vector embedding provider.
             auto_prepare (bool): If True, prepares documents and index immediately.
+            backend (str): Retrieval backend: "in_memory" (default) or "pgvector".
+            retriever (BaseRetriever, optional): Pre-instantiated custom retriever.
+            db_client (PgVectorDatabaseClient, optional): Database client for pgvector backend.
         """
         self.events = list(events) if events else []
         self.provider = provider
+        self.backend = backend
+        self.db_client = db_client
         self._is_prepared = False
         self._documents: list[dict] = []
         self._embedded_documents: list[dict] = []
         self._index: Optional[InMemorySemanticIndex] = None
-        self._retriever: Optional[HybridRetriever] = None
+        self._retriever: Optional[BaseRetriever] = retriever
 
-        if auto_prepare:
+        if self._retriever is not None:
+            self._is_prepared = True
+        elif self.backend == "pgvector":
+            self._retriever = PgVectorRetriever(db_client=self.db_client)
+            self._is_prepared = True
+
+        if auto_prepare and not self._is_prepared:
             self.prepare()
 
     @property
@@ -133,3 +146,33 @@ class RAGRetrievalService:
             nearby_well_ids=nearby_well_ids,
             top_k=top_k,
         )
+
+    def ingest_to_db(
+        self,
+        db_client: Optional[PgVectorDatabaseClient] = None,
+        batch_size: int = 50,
+    ) -> int:
+        """
+        Generic data ingestion path into PostgreSQL + pgvector:
+        events -> document_builder -> embedding provider -> PostgreSQL historical_event_embeddings
+
+        Args:
+            db_client (PgVectorDatabaseClient, optional): Database client instance.
+            batch_size (int): Batch size for generating document embeddings.
+
+        Returns:
+            int: Number of records embedded and ingested.
+        """
+        if not self.events:
+            return 0
+        if not self.provider:
+            raise ValueError("An EmbeddingProvider is required to ingest events into the database.")
+
+        client = db_client or self.db_client or PgVectorDatabaseClient()
+        return ingest_events_to_pgvector(
+            events=self.events,
+            provider=self.provider,
+            db_client=client,
+            batch_size=batch_size,
+        )
+

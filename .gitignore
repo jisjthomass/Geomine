@@ -4,3 +4,4 @@ venv/
 .venv/
 well_project.zip
 *.log
+.env

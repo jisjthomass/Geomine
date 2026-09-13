@@ -8,6 +8,7 @@ and cosine similarity).
 from typing import Optional
 import numpy as np
 
+from .base_retriever import BaseRetriever
 from .embeddings import EmbeddingProvider
 from .semantic_search import InMemorySemanticIndex, cosine_similarity
 
@@ -89,7 +90,7 @@ def compute_structured_score(
     return float(np.clip(score, 0.0, 1.0))
 
 
-class HybridRetriever:
+class HybridRetriever(BaseRetriever):
     """
     Hybrid retriever combining structured domain filtering with vector semantic retrieval.
     Decoupled from specific embedding providers, database engines, and LLMs.
@@ -211,3 +212,7 @@ class HybridRetriever:
         results.sort(key=lambda x: (x["hybrid_score"], x["semantic_similarity"]), reverse=True)
 
         return results[:top_k]
+ 
+ 
+# Alias for architectural clarity in multi-backend RAG systems
+InMemoryRetriever = HybridRetriever

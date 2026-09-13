@@ -25,14 +25,29 @@ def load_historical_events(file_path=None):
         return _events_cache
 
     try:
-        conn = psycopg2.connect(
-            dbname="nwis_wells_db",
-            user="postgres",
-            host=os.getenv("DB_HOST", "db"),
-            password="postgres",
-            port=5432,
-            connect_timeout=5,       # fail fast if postgres is down
-        )
+        db_host = os.getenv("DB_HOST")
+        hosts = [db_host] if db_host else ["127.0.0.1", "localhost", "db"]
+        if db_host == "db":
+            hosts.extend(["127.0.0.1", "localhost"])
+
+        conn = None
+        for h in hosts:
+            try:
+                conn = psycopg2.connect(
+                    dbname="nwis_wells_db",
+                    user="postgres",
+                    host=h,
+                    password="postgres",
+                    port=5432,
+                    connect_timeout=3,
+                )
+                break
+            except Exception:
+                continue
+
+        if not conn:
+            raise RuntimeError("Could not connect to PostgreSQL on any candidate host.")
+
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cursor.execute("""

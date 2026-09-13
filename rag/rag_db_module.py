@@ -3,12 +3,18 @@ import os
 import json
 
 def get_db_connection():
+    db_host = os.getenv("DB_HOST")
+    # If not explicitly specified, try localhost first on host machines, fallback to db
+    if not db_host:
+        db_host = "localhost"
+
     return psycopg2.connect(
         dbname=os.getenv("DB_NAME", "nwis_wells_db"),
         user=os.getenv("DB_USER", "postgres"),
         password=os.getenv("DB_PASSWORD", "postgres"),
-        host=os.getenv("DB_HOST", "db"),
-        port=os.getenv("DB_PORT", "5432")
+        host=db_host,
+        port=os.getenv("DB_PORT", "5432"),
+        connect_timeout=3,
     )
 
 def insert_event_embedding(event_id, content, embedding, well_id=None, depth_m=None, formation=None, event_type=None, report_id=None, document_type=None):
@@ -57,21 +63,21 @@ def semantic_search(query_embedding, formation=None, min_depth=None, max_depth=N
         """
         params = [embedding_str]
         
-        if formation:
-            query += " AND formation = %s"
-            params.append(formation)
+        if formation and str(formation).strip():
+            query += " AND LOWER(formation) = LOWER(%s)"
+            params.append(str(formation).strip())
         if min_depth is not None:
             query += " AND depth_m >= %s"
-            params.append(min_depth)
+            params.append(float(min_depth))
         if max_depth is not None:
             query += " AND depth_m <= %s"
-            params.append(max_depth)
-        if event_type:
-            query += " AND event_type = %s"
-            params.append(event_type)
+            params.append(float(max_depth))
+        if event_type and str(event_type).strip():
+            query += " AND LOWER(event_type) = LOWER(%s)"
+            params.append(str(event_type).strip())
         if nearby_well_ids and len(nearby_well_ids) > 0:
             query += " AND well_id = ANY(%s)"
-            params.append(nearby_well_ids)
+            params.append(list(nearby_well_ids))
             
         query += " ORDER BY distance ASC LIMIT %s;"
         params.append(top_k)
