@@ -3,7 +3,9 @@ version: '3.8'
 services:
   # 1. Database (PostgreSQL + PostGIS)
   db:
-    image: postgis/postgis:15-3.4
+    build:
+      context: .
+      dockerfile: Dockerfile.db
     container_name: geomine_db
     environment:
       POSTGRES_USER: postgres
@@ -16,6 +18,8 @@ services:
       # Auto-seed the database on first boot
       - ./historical_drilling_events.sql:/docker-entrypoint-initdb.d/01_init.sql
       - ./02_round2_upgrades.sql:/docker-entrypoint-initdb.d/02_upgrade.sql
+      - ./rag/03_rag_embeddings.sql:/docker-entrypoint-initdb.d/03_rag_embeddings.sql
+      - ./04_ocr_schema_upgrades.sql:/docker-entrypoint-initdb.d/04_ocr_schema_upgrades.sql
     restart: unless-stopped
 
   # 2. FastAPI Backend
@@ -24,6 +28,8 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: geomine_backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Change DB host from 127.0.0.1 to the container name 'db'
       - DB_HOST=db
@@ -31,6 +37,7 @@ services:
       - DB_PASSWORD=postgres
       - DB_NAME=nwis_wells_db
       - DB_PORT=5432
+      - OLLAMA_URL=http://host.docker.internal:11434/api/generate
     ports:
       - "8000:8000"
     depends_on:
