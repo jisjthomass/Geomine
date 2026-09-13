@@ -45,3 +45,9 @@ pydeck
 altair
 folium
 streamlit-folium
+pymupdf
+pytesseract
+Pillow
+python-multipart
+python-docx
+openpyxl
