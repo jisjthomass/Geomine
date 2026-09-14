@@ -76,7 +76,11 @@ def events_to_documents(events: list[dict]) -> list[dict]:
                 "depth_m": event.get("depth_m"),
                 "formation": event.get("formation"),
                 "event_type": event.get("event_type"),
+                "cause": event.get("cause"),
+                "mitigation": event.get("mitigation"),
+                "outcome": event.get("outcome"),
                 "report_id": event.get("report_id"),
+                "document_type": event.get("document_type"),
             },
         }
         documents.append(doc)

@@ -202,9 +202,11 @@ class TestGenericRetrievalRegression(unittest.TestCase):
 
     def test_no_matching_structured_candidates_fallback(self):
         """
-        Verify that when zero candidates match structured criteria, the retriever
-        gracefully falls back to broader semantic search rather than returning empty.
+        Verify that when explicit structured constraints have zero matches, the retriever
+        strictly returns zero results (no semantic leakage/fallback).
+        Unconstrained general queries retrieve candidates.
         """
+        # 1. Non-existent explicit constraints must return 0 results
         results = self.retriever.retrieve(
             query="General drilling hazard investigation",
             provider=self.provider,
@@ -214,15 +216,18 @@ class TestGenericRetrievalRegression(unittest.TestCase):
             event_type="HypotheticalAlienEvent",
             top_k=5,
         )
+        self.assertEqual(len(results), 0)
 
-        # Must NOT return empty; fallback allows semantic retrieval
-        self.assertEqual(len(results), 5)
-        for res in results:
-            # Structured score should be 0 since no filters matched
-            self.assertEqual(res["structured_score"], 0.0)
-            # Hybrid score equals semantic portion: 0.6 * semantic_norm
-            sem_norm = (res["semantic_similarity"] + 1.0) / 2.0
-            self.assertAlmostEqual(res["hybrid_score"], SEMANTIC_WEIGHT * sem_norm, places=5)
+        # 2. Genuinely unconstrained semantic query returns top_k candidates
+        broad_results = self.retriever.retrieve(
+            query="General drilling hazard investigation",
+            provider=self.provider,
+            current_depth=None,
+            formation=None,
+            event_type=None,
+            top_k=5,
+        )
+        self.assertEqual(len(broad_results), 5)
 
     def test_empty_dataset(self):
         """
@@ -251,9 +256,9 @@ class TestGenericRetrievalRegression(unittest.TestCase):
         results = retriever.retrieve(
             query="Test query",
             provider=self.provider,
-            current_depth=2800,
-            formation="Formation X",
-            event_type="Stuck Pipe",
+            current_depth=None,
+            formation=None,
+            event_type=None,
             top_k=3,
         )
         self.assertEqual(len(results), 3)
@@ -380,7 +385,7 @@ class TestGenericRetrievalRegression(unittest.TestCase):
 
         result = query_svc.answer_query(
             question=f"What happened at {depth}m in {form}?",
-            nearby_well_ids=["TEST_WELL"],
+            nearby_well_ids=[seed["well_id"]] if seed.get("well_id") else None,
             top_k=3,
         )
 

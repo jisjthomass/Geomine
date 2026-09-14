@@ -295,12 +295,15 @@ def test_top_k():
 
 
 def test_structured_filtering_no_candidates_fallback():
-    """Test I: When structured filtering produces 0 candidates, falls back to broader document set."""
+    """
+    Test I: When explicit structured constraints have 0 candidates, strictly returns 0 results.
+    Unconstrained queries without structured filters successfully retrieve candidates.
+    """
     docs = build_synthetic_dataset()
     retriever = HybridRetriever(documents=docs)
     provider = DeterministicFakeEmbeddingProvider()
 
-    # Query with non-existent formation and impossible depth
+    # 1. Query with non-existent formation and impossible depth must return zero results
     results = retriever.retrieve(
         query="test",
         provider=provider,
@@ -308,22 +311,25 @@ def test_structured_filtering_no_candidates_fallback():
         current_depth=99999,
         top_k=3,
     )
+    assert len(results) == 0, f"Expected 0 results when explicit constraints fail, got {len(results)}"
 
-    # Should not return empty list; falls back to broader document set
-    assert len(results) == 3, f"Expected 3 fallback results, got {len(results)}"
-    for r in results:
-        # Structured score is 0.0 since none matched
-        assert r["structured_score"] == 0.0
-        # Hybrid score is driven by semantic similarity
-        assert r["hybrid_score"] > 0.0
+    # 2. Broad query with no structured constraints retrieves candidates
+    broad_results = retriever.retrieve(
+        query="test",
+        provider=provider,
+        formation=None,
+        current_depth=None,
+        top_k=3,
+    )
+    assert len(broad_results) == 3, f"Expected 3 unconstrained results, got {len(broad_results)}"
     print("[PASSED] test_structured_filtering_no_candidates_fallback")
 
 
 def test_correct_formation_depth_outranks_higher_semantic_similarity():
     """
     CRITICAL TEST:
-    Proves that a semantically relevant event from the correct formation/depth
-    can outrank a semantically more similar event from the wrong formation/depth.
+    Proves that records with the wrong formation and outside depth tolerance
+    are strictly EXCLUDED by hard filtering, even if they have higher semantic similarity.
     """
     docs = build_synthetic_dataset()
     retriever = HybridRetriever(documents=docs)
@@ -342,21 +348,16 @@ def test_correct_formation_depth_outranks_higher_semantic_similarity():
 
     # In our synthetic dataset:
     # Doc 1: Formation X, 2800m, Stuck Pipe (cos_sim = 0.8, structured_score = 1.0 -> hybrid = 0.94)
-    # Doc 6: Formation Y, 4500m, Stuck Pipe (cos_sim = 1.0 [higher!], structured_score = 0.15 -> hybrid = 0.66)
+    # Doc 6: Formation Y, 4500m, Stuck Pipe (cos_sim = 1.0 [higher!], but wrong formation & outside depth!)
+    assert len(results) >= 1
     rank_1 = results[0]
     assert rank_1["metadata"]["formation"] == "Formation X"
     assert rank_1["metadata"]["depth_m"] == 2800
     assert rank_1["metadata"]["well_id"] == "WELL_NEAR"
 
-    # Verify Doc 1 outranks Doc 6
+    # Verify Doc 6 (wrong formation 'Formation Y' and depth 4500m) is strictly EXCLUDED
     doc6_results = [r for r in results if r["metadata"]["well_id"] == "WELL_FAR4"]
-    assert len(doc6_results) == 1
-    doc_6 = doc6_results[0]
-
-    # Doc 6 had higher semantic similarity
-    assert doc_6["semantic_similarity"] > rank_1["semantic_similarity"], "Doc 6 should have higher semantic similarity"
-    # But Doc 1 had higher hybrid score and outranked it!
-    assert rank_1["hybrid_score"] > doc_6["hybrid_score"], "Doc 1 should outrank Doc 6 in hybrid score"
+    assert len(doc6_results) == 0, "Doc 6 (wrong formation/depth) must be strictly excluded by hard filter"
     print("[PASSED] test_correct_formation_depth_outranks_higher_semantic_similarity")
 
 

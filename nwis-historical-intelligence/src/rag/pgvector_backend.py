@@ -14,6 +14,7 @@ from .hybrid_retrieval import (
     SEMANTIC_WEIGHT,
     STRUCTURED_WEIGHT,
     compute_structured_score,
+    filter_candidates,
 )
 
 
@@ -258,9 +259,10 @@ class PgVectorRetriever(BaseRetriever):
 
         # Check if structured constraints are present
         has_structured_constraints = bool(
-            (formation is not None and bool(formation.strip()))
+            (formation is not None and bool(str(formation).strip()))
             or (current_depth is not None)
-            or (event_type is not None and bool(event_type.strip()))
+            or (event_type is not None and bool(str(event_type).strip()))
+            or (nearby_well_ids is not None and len(nearby_well_ids) > 0)
         )
 
         min_depth = None
@@ -268,7 +270,7 @@ class PgVectorRetriever(BaseRetriever):
         if current_depth is not None:
             try:
                 c_depth = float(current_depth)
-                tol = float(depth_tolerance)
+                tol = float(depth_tolerance) if depth_tolerance is not None else 100.0
                 min_depth = max(0.0, c_depth - tol)
                 max_depth = c_depth + tol
             except (ValueError, TypeError):
@@ -290,7 +292,7 @@ class PgVectorRetriever(BaseRetriever):
                 min_depth=min_depth,
                 max_depth=max_depth,
                 event_type=event_type,
-                nearby_well_ids=None,  # Nearby wells are preferred via hybrid scoring, not hard-filtered
+                nearby_well_ids=nearby_well_ids,
                 top_k=candidate_limit,
             )
             candidates = resp.get("results", [])
@@ -314,6 +316,19 @@ class PgVectorRetriever(BaseRetriever):
 
         if not candidates:
             return []
+
+        # HARD FILTER ON CANDIDATES (Ensuring 100% parity across in-memory and PostgreSQL backends)
+        if has_structured_constraints:
+            candidates = filter_candidates(
+                items=candidates,
+                formation=formation,
+                current_depth=current_depth,
+                depth_tolerance=depth_tolerance,
+                event_type=event_type,
+                nearby_well_ids=nearby_well_ids,
+            )
+            if not candidates:
+                return []
 
         # Perform hybrid scoring
         results = []

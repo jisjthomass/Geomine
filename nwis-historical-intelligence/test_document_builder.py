@@ -78,6 +78,7 @@ def test_events_to_documents():
         "mitigation": "Worked pipe",
         "outcome": "Pipe freed",
         "report_id": "RPT-001",
+        "document_type": "WCR",
     }
     docs = events_to_documents([event])
 
@@ -96,12 +97,16 @@ def test_events_to_documents():
     metadata = docs[0]["metadata"]
     assert isinstance(metadata, dict)
 
-    # 4. well_id, depth_m, formation, event_type, report_id are preserved
+    # 4. All metadata fields are preserved
     assert metadata.get("well_id") == "TEST-001", f"Expected 'TEST-001', got {metadata.get('well_id')}"
     assert metadata.get("depth_m") == 2800, f"Expected 2800, got {metadata.get('depth_m')}"
     assert metadata.get("formation") == "Formation X", f"Expected 'Formation X', got {metadata.get('formation')}"
     assert metadata.get("event_type") == "Stuck Pipe", f"Expected 'Stuck Pipe', got {metadata.get('event_type')}"
+    assert metadata.get("cause") == "Differential sticking", f"Expected 'Differential sticking', got {metadata.get('cause')}"
+    assert metadata.get("mitigation") == "Worked pipe", f"Expected 'Worked pipe', got {metadata.get('mitigation')}"
+    assert metadata.get("outcome") == "Pipe freed", f"Expected 'Pipe freed', got {metadata.get('outcome')}"
     assert metadata.get("report_id") == "RPT-001", f"Expected 'RPT-001', got {metadata.get('report_id')}"
+    assert metadata.get("document_type") == "WCR", f"Expected 'WCR', got {metadata.get('document_type')}"
     print("[PASSED] test_events_to_documents passed.\n")
 
 

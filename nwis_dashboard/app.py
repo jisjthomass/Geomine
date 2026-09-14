@@ -1318,22 +1318,88 @@ with tab5:
   <span style="color:#cdd6f4;">Depth Window: </span><b style="color:#fadb14">±{p_tol} m</b>
 </div>""", unsafe_allow_html=True)
 
-                        if not events:
-                            st.warning("[!] No historical events matched your query. Try widening the depth window or checking the formation name.")
-                        else:
-                            total = pattern.get("total_events", len(events))
-                            unique_w = pattern.get("unique_wells", 0)
-                            most_common = pattern.get("most_common_event", "N/A")
-                            avg_depth = pattern.get("average_depth", 0)
+                        rag_evidence = data.get("rag_evidence", [])
+                        rag_answer = data.get("answer")
 
-                            m1, m2, m3, m4 = st.columns(4)
-                            m1.metric(" Incidents Found", total)
-                            m2.metric(" Unique Wells", unique_w)
-                            m3.metric("[!] Dominant Event", most_common)
-                            m4.metric(" Avg Depth", f"{avg_depth} m")
+                        # When rag_evidence is available, it is the source of truth for all card fields and ranking
+                        display_events = []
+                        if rag_evidence:
+                            for item in rag_evidence:
+                                meta = item.get("metadata")
+                                if not isinstance(meta, dict):
+                                    meta = item
+                                ev_dict = dict(meta)
+
+                                # Source of truth: RAG hybrid_score converted to percentage (e.g. 0.8643 -> 86.43%)
+                                h_score = item.get("hybrid_score")
+                                if h_score is not None:
+                                    ev_dict["hybrid_score"] = h_score
+                                    ev_dict["relevance_score"] = h_score * 100.0 if h_score <= 1.0 else float(h_score)
+                                elif "relevance_score" in item:
+                                    ev_dict["relevance_score"] = item["relevance_score"]
+                                elif "relevance_score" not in ev_dict:
+                                    ev_dict["relevance_score"] = 0.0
+
+                                p_d = parsed.get("current_depth")
+                                if p_d is not None and meta.get("depth_m") is not None:
+                                    ev_dict["depth_difference_m"] = abs(meta["depth_m"] - p_d)
+                                elif "depth_difference_m" not in ev_dict:
+                                    ev_dict["depth_difference_m"] = 0
+
+                                display_events.append(ev_dict)
+                        elif events:
+                            display_events = list(events)
+
+                        if not events and not rag_evidence:
+                            st.warning("[!] No historical events matched your query. Try widening the depth window or checking the formation name.")
+                        elif display_events:
+                            if rag_evidence:
+                                total = len(display_events)
+                                unique_w = len(set(e.get("well_id") for e in display_events if e.get("well_id")))
+                                depths = [e.get("depth_m") for e in display_events if e.get("depth_m") is not None]
+                                avg_depth = round(sum(depths) / len(depths), 1) if depths else 0
+                            else:
+                                total = pattern.get("total_events") or len(display_events)
+                                unique_w = pattern.get("unique_wells") or len(set(e.get("well_id") for e in display_events if e.get("well_id")))
+                                avg_depth = pattern.get("average_depth", 0)
+                                if not avg_depth:
+                                    depths = [e.get("depth_m") for e in display_events if e.get("depth_m") is not None]
+                                    avg_depth = round(sum(depths) / len(depths), 1) if depths else 0
+                            
+                            # Determine dominant event from display_events - strictly omit if tie or no valid event
+                            dominant_event = None
+                            ev_types = [
+                                e.get("event_type") for e in display_events 
+                                if e.get("event_type") and str(e.get("event_type")).strip() not in ("Unknown", "N/A", "None", "")
+                            ]
+                            if ev_types:
+                                from collections import Counter
+                                counts = Counter(ev_types)
+                                top_counts = counts.most_common(2)
+                                if len(top_counts) == 1:
+                                    dominant_event = top_counts[0][0]
+                                elif len(top_counts) >= 2:
+                                    # Exactly one event type must have strictly highest count (no tie)
+                                    if top_counts[0][1] > top_counts[1][1]:
+                                        dominant_event = top_counts[0][0]
+                                    else:
+                                        dominant_event = None
+
+                            # Dynamic layout: 4 columns if dominant_event exists, 3 columns otherwise
+                            if dominant_event:
+                                m1, m2, m3, m4 = st.columns(4)
+                                m1.metric("Incidents Found", total)
+                                m2.metric("Unique Wells", unique_w)
+                                m3.metric("Dominant Event", dominant_event)
+                                m4.metric("Avg Depth", f"{avg_depth} m")
+                            else:
+                                m1, m2, m3 = st.columns(3)
+                                m1.metric("Incidents Found", total)
+                                m2.metric("Unique Wells", unique_w)
+                                m3.metric("Avg Depth", f"{avg_depth} m")
 
                             st.markdown(f"---")
-                            st.markdown(f"**{total} result(s) — sorted by relevance score:**")
+                            st.markdown(f"**{len(display_events)} result(s) — sorted by relevance score:**")
 
                             EVENT_COLOR = {
                                 "Stuck Pipe Incident": "#ff4b4b",
@@ -1352,7 +1418,7 @@ with tab5:
                                 "Normal Operation": "",
                             }
 
-                            for ev in events:
+                            for ev in display_events:
                                 ev_type = ev.get("event_type", "Unknown")
                                 color = EVENT_COLOR.get(ev_type, "#888888")
                                 icon = EVENT_ICON.get(ev_type, "")
@@ -1365,7 +1431,7 @@ with tab5:
                                 mitigation = ev.get("mitigation", "Not recorded")
                                 outcome = ev.get("outcome", "Not recorded")
 
-                                lbl = f"{icon}  **{well_id}** — {ev_type}  |  Depth: **{depth_m} m**  |  Relevance: **{score:.0f}%**  |  Δ{depth_diff:.0f} m from query depth"
+                                lbl = f"{icon}  **{well_id}** — {ev_type}  |  Depth: **{depth_m} m**  |  Relevance: **{score:.2f}%**  |  Δ{depth_diff:.0f} m from query depth"
                                 with st.expander(lbl, expanded=False):
                                     ca, cb, cc = st.columns(3)
                                     ca.markdown("** Well**\n\n`" + str(well_id) + "`")
@@ -1377,7 +1443,24 @@ with tab5:
   <div style="margin-bottom:6px;"><span style="color:#f7a800;font-weight:700;">[CAUSE] Root Cause:</span> <span style="color:#e0e0e0;">{cause}</span></div>
   <div style="margin-bottom:6px;"><span style="color:#00d4ff;font-weight:700;">[ACTION] Mitigation:</span> <span style="color:#e0e0e0;">{mitigation}</span></div>
   <div style="margin-bottom:6px;"><span style="color:#00cc6a;font-weight:700;">[RESULT] Outcome:</span> <span style="color:#e0e0e0;">{outcome}</span></div>
-  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #1e293b;"><span style="color:#a855f7;font-weight:700;">[INFO] Event Summary:</span> <span style="color:#cbd5e1;">Historical incident of {ev_type} recorded at {depth_m}m in {form}. Root cause analyzed as {cause}, addressed via {mitigation}, resulting in {outcome}.</span></div>
+</div>""", unsafe_allow_html=True)
+
+                            # Historical Inference section (rendered once, after all evidence cards)
+                            inference_text = ""
+                            if rag_answer:
+                                if "Historical Inference:" in rag_answer:
+                                    inference_text = rag_answer.split("Historical Inference:", 1)[1].strip()
+                                elif "Historical Inference" in rag_answer:
+                                    inference_text = rag_answer.split("Historical Inference", 1)[1].lstrip(":").strip()
+                                else:
+                                    inference_text = rag_answer.strip()
+
+                            if inference_text:
+                                st.markdown("---")
+                                st.markdown("#### **Historical Inference:**")
+                                st.markdown(f"""
+<div style="background:#0a192f;border:1px solid #10b98166;border-left:4px solid #10b981;border-radius:6px;padding:16px 20px;margin:10px 0 16px 0;">
+  <div style="color:#e2e8f0;font-size:0.92rem;line-height:1.6;">{inference_text}</div>
 </div>""", unsafe_allow_html=True)
 
 

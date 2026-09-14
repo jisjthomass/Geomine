@@ -5,7 +5,7 @@ event type, nearby wells) with semantic vector retrieval (Gemini embeddings
 and cosine similarity).
 """
 
-from typing import Optional
+from typing import Any, Optional
 import numpy as np
 
 from .base_retriever import BaseRetriever
@@ -21,6 +21,104 @@ WEIGHT_FORMATION = 0.35
 WEIGHT_DEPTH = 0.35
 WEIGHT_EVENT_TYPE = 0.15
 WEIGHT_NEARBY_WELL = 0.15
+
+
+def matches_dynamic_constraints(
+    item: dict,
+    formation: Optional[str] = None,
+    current_depth: Optional[float] = None,
+    depth_tolerance: float = 100.0,
+    event_type: Optional[str] = None,
+    nearby_well_ids: Optional[list[str]] = None,
+) -> bool:
+    """
+    Evaluates whether a record dictionary satisfies ALL explicitly provided structured constraints.
+    Treats every explicitly present constraint as a HARD eligibility filter:
+    - event_type: when present, record's event_type must match (case-insensitive)
+    - formation: when present, record's formation must match (case-insensitive, allows 'all')
+    - depth: when present, record's depth_m must be within [current_depth - depth_tolerance, current_depth + depth_tolerance]
+    - nearby_well_ids: when supplied as a non-empty list, record's well_id must be in nearby_well_ids
+    Completely dynamic: never hardcodes any event, formation, depth, or well name.
+    """
+    meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else item
+    if not isinstance(meta, dict):
+        return False
+
+    # 1. Hard filter: event_type (case-insensitive)
+    if event_type is not None and bool(str(event_type).strip()):
+        target_event = str(event_type).strip().lower()
+        doc_event = str(meta.get("event_type") or "").strip().lower()
+        if doc_event != target_event:
+            return False
+
+    # 2. Hard filter: formation (case-insensitive)
+    if formation is not None and bool(str(formation).strip()):
+        target_form = str(formation).strip().lower()
+        if target_form != "all":
+            doc_form = str(meta.get("formation") or "").strip().lower()
+            if doc_form != target_form:
+                return False
+
+    # 3. Hard filter: depth within tolerance
+    if current_depth is not None:
+        doc_depth = meta.get("depth_m")
+        if doc_depth is None:
+            return False
+        try:
+            d_val = float(doc_depth)
+            target_val = float(current_depth)
+            tol = float(depth_tolerance) if depth_tolerance is not None else 100.0
+            if abs(d_val - target_val) > tol:
+                return False
+        except (ValueError, TypeError):
+            return False
+
+    # 4. Hard filter: nearby_well_ids (when supplied as a non-empty list)
+    if nearby_well_ids is not None and len(nearby_well_ids) > 0:
+        doc_well = meta.get("well_id")
+        if doc_well is None:
+            return False
+        nearby_set = {str(w).strip().lower() for w in nearby_well_ids}
+        if str(doc_well).strip().lower() not in nearby_set:
+            return False
+
+    return True
+
+
+def filter_candidates(
+    items: list[dict],
+    formation: Optional[str] = None,
+    current_depth: Optional[float] = None,
+    depth_tolerance: float = 100.0,
+    event_type: Optional[str] = None,
+    nearby_well_ids: Optional[list[str]] = None,
+) -> list[dict]:
+    """
+    Filters a list of document or candidate dictionaries strictly by all supplied structured constraints.
+    Returns only items satisfying ALL explicit constraints.
+    If no constraints are provided, returns items unchanged.
+    """
+    has_any_constraint = (
+        (event_type is not None and bool(str(event_type).strip()))
+        or (formation is not None and bool(str(formation).strip()))
+        or (current_depth is not None)
+        or (nearby_well_ids is not None and len(nearby_well_ids) > 0)
+    )
+    if not has_any_constraint:
+        return list(items)
+
+    return [
+        item for item in items
+        if matches_dynamic_constraints(
+            item=item,
+            formation=formation,
+            current_depth=current_depth,
+            depth_tolerance=depth_tolerance,
+            event_type=event_type,
+            nearby_well_ids=nearby_well_ids,
+        )
+    ]
+
 
 
 def compute_structured_score(
@@ -149,15 +247,36 @@ class HybridRetriever(BaseRetriever):
 
         # Check if any structured constraints are active
         has_structured_constraints = (
-            (formation is not None and bool(formation.strip()))
+            (formation is not None and bool(str(formation).strip()))
             or (current_depth is not None)
-            or (event_type is not None and bool(event_type.strip()))
+            or (event_type is not None and bool(str(event_type).strip()))
             or (nearby_well_ids is not None and len(nearby_well_ids) > 0)
         )
 
-        # Pre-calculate structured scores for all documents
+        # 1. HARD FILTER BY ALL EXPLICIT STRUCTURED CONSTRAINTS
+        # When explicit structured constraints are present (formation, depth, event_type, nearby_wells),
+        # only records that satisfy ALL explicit constraints remain eligible for retrieval.
+        # Semantic similarity ranking happens ONLY after this hard structured filtering.
+        # Semantic similarity must NEVER re-introduce a record that failed a hard structured constraint.
+        if has_structured_constraints:
+            eligible_documents = filter_candidates(
+                items=self.documents,
+                formation=formation,
+                current_depth=current_depth,
+                depth_tolerance=depth_tolerance,
+                event_type=event_type,
+                nearby_well_ids=nearby_well_ids,
+            )
+            # If explicit constraints exist and zero records satisfy them, return zero results
+            if not eligible_documents:
+                return []
+        else:
+            # Genuinely broad/general query without structured constraints
+            eligible_documents = self.documents
+
+        # Pre-calculate structured scores for all eligible documents
         doc_structured_scores = []
-        for doc in self.documents:
+        for doc in eligible_documents:
             meta = doc.get("metadata", {})
             s_score = compute_structured_score(
                 metadata=meta,
@@ -169,14 +288,7 @@ class HybridRetriever(BaseRetriever):
             )
             doc_structured_scores.append((doc, s_score))
 
-        # Candidate selection:
-        # If structured constraints produce matching candidates (structured_score > 0), rank those.
-        # If they produce zero candidates, allow semantic retrieval over broader document set.
-        if has_structured_constraints:
-            matching_candidates = [item for item in doc_structured_scores if item[1] > 0.0]
-            candidates = matching_candidates if matching_candidates else doc_structured_scores
-        else:
-            candidates = doc_structured_scores
+        candidates = doc_structured_scores
 
         # Generate query embedding
         query_embedding = provider.embed_text(query)
