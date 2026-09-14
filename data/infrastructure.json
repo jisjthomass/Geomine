@@ -1,0 +1,7 @@
+[
+  {"infra_id": "AQ-01", "name": "Shallow aquifer A", "latitude": 27.3525, "longitude": 95.3180, "depth_m": 1200, "infra_type": "Aquifer", "safe_radius_km": 0.8, "safe_depth_window_m": 150},
+  {"infra_id": "AQ-02", "name": "Community aquifer B", "latitude": 27.3610, "longitude": 95.3310, "depth_m": 900, "infra_type": "Aquifer", "safe_radius_km": 1.0, "safe_depth_window_m": 200},
+  {"infra_id": "PL-01", "name": "HP gas pipeline 1", "latitude": 27.3470, "longitude": 95.3255, "depth_m": 80, "infra_type": "Pipeline", "safe_radius_km": 0.4, "safe_depth_window_m": 60},
+  {"infra_id": "PL-02", "name": "Gas line spur", "latitude": 27.3558, "longitude": 95.3095, "depth_m": 50, "infra_type": "Pipeline", "safe_radius_km": 0.5, "safe_depth_window_m": 40},
+  {"infra_id": "DW-01", "name": "Dug well cluster", "latitude": 27.3492, "longitude": 95.3360, "depth_m": 40, "infra_type": "DugWell", "safe_radius_km": 0.3, "safe_depth_window_m": 30}
+]
