@@ -1,5 +1,8 @@
 import logging
 import os
+from dotenv import load_dotenv
+load_dotenv()
+logger = logging.getLogger(__name__)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -8,13 +11,128 @@ from typing import List, Dict, Any
 
 # ---- NWIS Historical Intelligence Engine (Gemini) ----
 import sys
-sys.path.append("nwis-historical-intelligence/src")
+import json
+HIST_INTEL_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "nwis-historical-intelligence", "src"))
+if HIST_INTEL_SRC not in sys.path:
+    sys.path.insert(0, HIST_INTEL_SRC)
+
 from intelligence import analyze_well
 from data_loader import load_historical_events
 from llm.answer_generator import HistoricalAnswerGenerator
 from llm.query_service import HistoricalQueryService
 from llm.gemini import GeminiProvider
+from rag.embeddings import GeminiEmbeddingProvider
+from rag.retrieval_service import RAGRetrievalService
+from rag.pgvector_backend import PgVectorRetriever, PgVectorDatabaseClient
 # --------------------------------------------------------
+
+# Module-level singleton for configurable RAG retrieval service
+_rag_service = None
+_rag_backend_mode = None
+
+def get_rag_service(events: list):
+    """
+    Returns a configured RAGRetrievalService instance based on the
+    RAG_BACKEND environment variable ('in_memory' or 'pgvector').
+    """
+    global _rag_service, _rag_backend_mode
+    backend = os.getenv("RAG_BACKEND", "in_memory").strip().lower()
+
+    if _rag_service is None or _rag_backend_mode != backend:
+        embedding_provider = GeminiEmbeddingProvider()
+        if backend == "pgvector":
+            logger.info("Initializing RAGRetrievalService with PGVECTOR backend...")
+            _rag_service = RAGRetrievalService(
+                provider=embedding_provider,
+                backend="pgvector",
+            )
+        else:
+            logger.info("Initializing RAGRetrievalService with IN-MEMORY backend...")
+            cache_file = os.path.join(
+                os.path.dirname(__file__),
+                "nwis-historical-intelligence",
+                "nwis_mock_embeddings_cache.json",
+            )
+            prepared_events = events
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cache = json.load(f)
+                    from rag.document_builder import events_to_documents
+                    docs = events_to_documents(events)
+                    embedded_docs = []
+                    uncached_docs = []
+                    sample_dim = 3072
+                    for doc in docs:
+                        if doc["text"] in cache:
+                            d = dict(doc)
+                            d["embedding"] = cache[doc["text"]]
+                            sample_dim = len(d["embedding"])
+                            embedded_docs.append(d)
+                        else:
+                            uncached_docs.append(doc)
+                    if uncached_docs:
+                        try:
+                            from rag.embeddings import embed_documents
+                            newly_embedded = embed_documents(uncached_docs, embedding_provider)
+                            embedded_docs.extend(newly_embedded)
+                        except Exception as emb_err:
+                            logger.warning(f"Embedding uncached docs failed ({emb_err}); assigning fallback vectors to preserve offline cache.")
+                            import math
+                            for udoc in uncached_docs:
+                                seed = sum(ord(c) for c in udoc["text"])
+                                v = [float((seed + j * 17) % 100 + 1) for j in range(sample_dim)]
+                                norm = math.sqrt(sum(x * x for x in v)) or 1.0
+                                d = dict(udoc)
+                                d["embedding"] = [x / norm for x in v]
+                                embedded_docs.append(d)
+                    prepared_events = embedded_docs
+                except Exception as e:
+                    logger.warning(f"Could not load embeddings cache: {e}")
+                    prepared_events = events
+
+            _rag_service = RAGRetrievalService(
+                events=prepared_events,
+                provider=embedding_provider,
+                backend="in_memory",
+                auto_prepare=True,
+            )
+        _rag_backend_mode = backend
+
+    return _rag_service
+
+def load_all_events() -> list:
+    """
+    Loads historical events from PostgreSQL database, augmenting/falling back
+    to local synthetic dataset when offline or running in-memory mode.
+    """
+    events = []
+    try:
+        events = load_historical_events()
+    except Exception as e:
+        logger.warning(f"load_historical_events error: {e}")
+        events = []
+
+    mock_path = os.path.join(
+        os.path.dirname(__file__),
+        "nwis-historical-intelligence",
+        "nwis_mock_historical_events.json",
+    )
+    if os.path.exists(mock_path):
+        try:
+            with open(mock_path, "r", encoding="utf-8") as f:
+                mock_events = json.load(f)
+            if not events:
+                events = mock_events
+            else:
+                existing_keys = {(e.get("well_id"), e.get("depth_m")) for e in events}
+                for me in mock_events:
+                    if (me.get("well_id"), me.get("depth_m")) not in existing_keys:
+                        events.append(me)
+        except Exception as e:
+            logger.warning(f"Could not load mock events fallback: {e}")
+
+    return events
 
 # =====================================================================
 # REAL IMPORTS FROM TEAM MODULES
@@ -505,7 +623,7 @@ async def generate_ai_summary(payload: TelemetryPayload):
 @app.post("/api/search_knowledge")
 async def search_knowledge(payload: KnowledgeSearchPayload):
     try:
-        db_events = load_historical_events()
+        db_events = load_all_events()
         if not db_events:
             db_events = []
             
@@ -516,11 +634,30 @@ async def search_knowledge(payload: KnowledgeSearchPayload):
                 valid_well_ids.append(e["well_id"])
                 
         valid_well_ids = list(set(valid_well_ids))
+        logger.info(f"RAG search_knowledge invoked: question='{payload.question}', radius_km={payload.radius_km}, nearby_wells={len(valid_well_ids)}")
         
+        query_lower = payload.question.lower()
+        proximity_keywords = [
+            "nearby", "close by", "around here", "this area", "this region",
+            "local", "surrounding", "radius"
+        ]
+        requires_proximity = any(kw in query_lower for kw in proximity_keywords)
+        effective_well_ids = valid_well_ids if requires_proximity else None
+
         llm = GeminiProvider()
-        query_service = HistoricalQueryService(llm, db_events)
+        rag_service = get_rag_service(db_events)
+        query_service = HistoricalQueryService(
+            provider=llm,
+            events=db_events,
+            rag_service=rag_service,
+        )
         
-        result = query_service.answer_query(payload.question, valid_well_ids)
+        result = query_service.answer_query(
+            question=payload.question,
+            nearby_well_ids=effective_well_ids,
+            top_k=5,
+            generate_answer=True,
+        )
         return result
     except Exception as e:
         logger.error(f"Search Knowledge Error: {e}")
@@ -600,6 +737,114 @@ async def ingest_report(payload: IngestPayload):
         
     except Exception as e:
         logger.error(f"Ingestion Error: {e}")
+        return {"status": "error", "message": str(e)}
+# =====================================================================
+# 7b. ENTERPRISE OCR FILE UPLOAD ENDPOINT
+# =====================================================================
+from fastapi import File, UploadFile
+import tempfile
+import shutil
+
+@app.post("/api/upload_report")
+async def upload_report(file: UploadFile = File(...), insert: bool = False):
+    """
+    Enterprise OCR Pipeline endpoint.
+    Accepts PDF, DOCX, XLSX, or image uploads.
+    Runs full pipeline: classify -> extract -> validate -> optionally insert to DB.
+    """
+    try:
+        from pathlib import Path
+        from OCR.ocr_pipeline_ollama import process_single_file
+
+        # Save uploaded file to a temp location
+        suffix = Path(file.filename).suffix
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = Path(tmp.name)
+
+        # Rename to preserve original filename for audit trail
+        final_path = tmp_path.parent / file.filename
+        shutil.move(str(tmp_path), str(final_path))
+
+        # Run the full enterprise pipeline
+        result = process_single_file(final_path, insert_to_db=insert)
+
+        # Clean up temp file
+        try:
+            final_path.unlink()
+        except Exception:
+            pass
+
+        return {
+            "status": result.get("status", "ERROR"),
+            "document_class": result.get("document_class"),
+            "drilling_event": result.get("drilling_event"),
+            "infrastructure": result.get("infrastructure"),
+            "event_confidence": result.get("event_confidence", 0.0),
+            "infra_confidence": result.get("infra_confidence", 0.0),
+            "warnings": result.get("warnings", []),
+            "db_event_id": result.get("db_event_id"),
+            "db_infra_id": result.get("db_infra_id"),
+        }
+
+    except Exception as e:
+        logger.error(f"OCR Upload Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# =====================================================================
+# 7c. OCR CORRECTION ENDPOINT (Tier 3: Feedback Loop)
+# =====================================================================
+class CorrectionPayload(BaseModel):
+    record_type: str    # 'drilling_event' or 'infrastructure'
+    record_id: int
+    field_name: str
+    old_value: str = None
+    new_value: str
+
+@app.patch("/api/ocr_correction")
+async def ocr_correction(payload: CorrectionPayload):
+    """
+    Allows users to correct wrong OCR extractions.
+    Logs the correction for future prompt improvement.
+    """
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            dbname="nwis_wells_db", user="postgres",
+            host=os.getenv("DB_HOST", "db"), password="postgres", port=5432
+        )
+        cur = conn.cursor()
+
+        # Log the correction
+        cur.execute("""
+            INSERT INTO ocr_corrections
+                (record_type, record_id, field_name, old_value, new_value)
+            VALUES (%s, %s, %s, %s, %s);
+        """, (payload.record_type, payload.record_id,
+              payload.field_name, payload.old_value, payload.new_value))
+
+        # Apply the correction to the actual record
+        if payload.record_type == "drilling_event":
+            table = "historical_drilling_events"
+        elif payload.record_type == "infrastructure":
+            table = "underground_infrastructure"
+        else:
+            return {"status": "error", "message": "Invalid record_type"}
+
+        cur.execute(
+            f"UPDATE {table} SET {payload.field_name} = %s WHERE id = %s",
+            (payload.new_value, payload.record_id)
+        )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {"status": "success", "message": f"Corrected {payload.field_name} on {payload.record_type} #{payload.record_id}"}
+
+    except Exception as e:
+        logger.error(f"Correction Error: {e}")
         return {"status": "error", "message": str(e)}
 
 # =====================================================================

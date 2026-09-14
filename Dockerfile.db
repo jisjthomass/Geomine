@@ -1,0 +1,8 @@
+FROM postgis/postgis:15-3.4
+
+# The standard apt repositories might have expired GPG keys or release files
+# because of the base image age, so we ignore valid-until just in case.
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y postgresql-15-pgvector && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
