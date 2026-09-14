@@ -20,6 +20,7 @@ services:
       - ./02_round2_upgrades.sql:/docker-entrypoint-initdb.d/02_upgrade.sql
       - ./rag/03_rag_embeddings.sql:/docker-entrypoint-initdb.d/03_rag_embeddings.sql
       - ./04_ocr_schema_upgrades.sql:/docker-entrypoint-initdb.d/04_ocr_schema_upgrades.sql
+      - ./05_authentication.sql:/docker-entrypoint-initdb.d/05_authentication.sql
     restart: unless-stopped
 
   # 2. FastAPI Backend
@@ -38,6 +39,7 @@ services:
       - DB_NAME=nwis_wells_db
       - DB_PORT=5432
       - OLLAMA_URL=http://host.docker.internal:11434/api/generate
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
     ports:
       - "8000:8000"
     depends_on:

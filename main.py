@@ -160,6 +160,11 @@ def haversine(lat1, lon1, lat2, lon2):
 
 app = FastAPI(title="NWIS Backend Hub", description="Next-Gen Well Intelligence System API")
 
+from fastapi import Depends
+from auth.dependencies import get_current_user
+from auth.routes import router as auth_router
+app.include_router(auth_router)
+
 # =====================================================================
 # 1. CORS SECURITY (Protects Mahitha's Frontend)
 # =====================================================================
@@ -361,7 +366,7 @@ def health_check():
 # 5. THE CORE ORCHESTRATOR ENDPOINT
 # =====================================================================
 @app.post("/api/analyze_risk", response_model=MasterResponse)
-async def analyze_well_condition(payload: TelemetryPayload):
+async def analyze_well_condition(payload: TelemetryPayload, current_user = Depends(get_current_user)):
     logger.info(f"Received Telemetry for {payload.location_area} at Depth {payload.depth}m")
     telemetry_dict = payload.model_dump()
     
@@ -577,7 +582,7 @@ async def analyze_well_condition(payload: TelemetryPayload):
 # 5b. DEDICATED AI GENERATOR ENDPOINT (For Lazy UI Loading)
 # =====================================================================
 @app.post("/api/generate_ai_summary")
-async def generate_ai_summary(payload: TelemetryPayload):
+async def generate_ai_summary(payload: TelemetryPayload, current_user = Depends(get_current_user)):
     try:
         db_events = load_historical_events()
         valid_well_ids = []
@@ -621,7 +626,7 @@ async def generate_ai_summary(payload: TelemetryPayload):
 # 6. NLP SEARCH REPOSITORY ENDPOINT
 # =====================================================================
 @app.post("/api/search_knowledge")
-async def search_knowledge(payload: KnowledgeSearchPayload):
+async def search_knowledge(payload: KnowledgeSearchPayload, current_user = Depends(get_current_user)):
     try:
         db_events = load_all_events()
         if not db_events:
@@ -672,7 +677,7 @@ class IngestPayload(BaseModel):
     raw_text: str
 
 @app.post("/api/ingest_report")
-async def ingest_report(payload: IngestPayload):
+async def ingest_report(payload: IngestPayload, current_user = Depends(get_current_user)):
     try:
         import psycopg2
         import json
@@ -746,7 +751,7 @@ import tempfile
 import shutil
 
 @app.post("/api/upload_report")
-async def upload_report(file: UploadFile = File(...), insert: bool = False):
+async def upload_report(file: UploadFile = File(...), insert: bool = False, current_user = Depends(get_current_user)):
     """
     Enterprise OCR Pipeline endpoint.
     Accepts PDF, DOCX, XLSX, or image uploads.
@@ -803,7 +808,7 @@ class CorrectionPayload(BaseModel):
     new_value: str
 
 @app.patch("/api/ocr_correction")
-async def ocr_correction(payload: CorrectionPayload):
+async def ocr_correction(payload: CorrectionPayload, current_user = Depends(get_current_user)):
     """
     Allows users to correct wrong OCR extractions.
     Logs the correction for future prompt improvement.
@@ -859,7 +864,7 @@ class NPTAnalysisPayload(BaseModel):
     search_radius_km: float = 5.0
 
 @app.post("/api/analyze_npt")
-async def analyze_npt(payload: NPTAnalysisPayload):
+async def analyze_npt(payload: NPTAnalysisPayload, current_user = Depends(get_current_user)):
     try:
         logger.info("Executing NPT Financial Analysis...")
         db_events = load_historical_events()
@@ -949,7 +954,7 @@ class MitigationQueueItem(BaseModel):
 mitigation_queue = {}
 
 @app.post("/api/mitigation/queue")
-async def queue_mitigation(item: MitigationQueueItem):
+async def queue_mitigation(item: MitigationQueueItem, current_user = Depends(get_current_user)):
     # AI generates mitigation, sends here for engineer review
     queue_id = f"Q-{int(datetime.now().timestamp())}"
     mitigation_queue[queue_id] = {
@@ -961,12 +966,12 @@ async def queue_mitigation(item: MitigationQueueItem):
     return {"status": "queued", "queue_id": queue_id}
 
 @app.get("/api/mitigation/pending")
-async def get_pending_mitigations():
+async def get_pending_mitigations(current_user = Depends(get_current_user)):
     pending = {k: v for k, v in mitigation_queue.items() if v["status"] == "PENDING_REVIEW"}
     return {"pending_count": len(pending), "items": pending}
 
 @app.post("/api/mitigation/approve/{queue_id}")
-async def approve_mitigation(queue_id: str):
+async def approve_mitigation(queue_id: str, current_user = Depends(get_current_user)):
     if queue_id in mitigation_queue:
         mitigation_queue[queue_id]["status"] = "APPROVED"
         logger.info(f"Engineer Approved Mitigation {queue_id}. Dispatching to Rig...")
@@ -981,7 +986,7 @@ class EnvironmentalPayload(BaseModel):
     current_depth: float
 
 @app.post("/api/environmental_risk")
-async def check_environmental_risk(payload: EnvironmentalPayload):
+async def check_environmental_risk(payload: EnvironmentalPayload, current_user = Depends(get_current_user)):
     # Mock data representing underground infrastructure in the drilling area
     infrastructure_data = [
         {"type": "Aquifer", "depth_m": 1200},

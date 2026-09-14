@@ -51,3 +51,8 @@ Pillow
 python-multipart
 python-docx
 openpyxl
+pwdlib[argon2]
+PyJWT
+pytest
+httpx
+email-validator==2.3.0
