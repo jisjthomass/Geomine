@@ -28,6 +28,160 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+st.markdown("""
+    <style>
+    header { background: transparent !important; box-shadow: none !important; }
+    header[data-testid="stHeader"] { background: transparent !important; }
+
+    #MainMenu { display: none !important; }
+    [data-testid="stToolbar"] [data-testid="stHeaderActionElements"] { display: none !important; }
+    [data-testid="stAppDeployButton"] { display: none !important; }
+    .stDeployButton { display: none !important; }
+    footer { display: none !important; }
+    
+    [data-testid="stExpandSidebarButton"], 
+    [data-testid="stSidebarCollapseButton"] {
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    
+    .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 1.8rem !important;
+        padding-right: 1.8rem !important;
+        max-width: 100% !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+import streamlit.components.v1 as components
+import api_client
+
+if st.session_state.get("_auth_action") == "set":
+    acc_tok = st.session_state.get("access_token", "")
+    usr = st.session_state.get("username", "")
+    js = f"""
+    <script>
+    window.parent.document.cookie = "geomine_access_token={acc_tok}; path=/; max-age=86400; SameSite=Strict";
+    window.parent.document.cookie = "geomine_username={usr}; path=/; max-age=86400; SameSite=Strict";
+    </script>
+    """
+    components.html(js, height=0, width=0)
+    st.session_state["_auth_action"] = None
+
+elif st.session_state.get("_auth_action") == "clear":
+    js = """
+    <script>
+    window.parent.document.cookie = "geomine_access_token=; path=/; max-age=0; SameSite=Strict";
+    window.parent.document.cookie = "geomine_username=; path=/; max-age=0; SameSite=Strict";
+    </script>
+    """
+    components.html(js, height=0, width=0)
+    st.session_state["_auth_action"] = None
+
+if "authenticated" not in st.session_state:
+    access_token = st.context.cookies.get("geomine_access_token")
+    username = st.context.cookies.get("geomine_username")
+    
+    if access_token:
+        valid_user = api_client.validate_token(access_token)
+        if valid_user:
+            st.session_state["authenticated"] = True
+            st.session_state["access_token"] = access_token
+            st.session_state["username"] = valid_user.get("username") or username or "Unknown"
+        else:
+            st.session_state["authenticated"] = False
+            st.session_state["_auth_action"] = "clear"
+    else:
+        st.session_state["authenticated"] = False
+
+if "auth_mode" not in st.session_state:
+    st.session_state["auth_mode"] = "login"
+
+if not st.session_state["authenticated"]:
+    if st.session_state["auth_mode"] == "login":
+        st.markdown("<h1 style='text-align: center; margin-top: 0px; margin-bottom: 5px; color: #f8fafc;'>GEOMINE</h1>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center; margin-top: 0px; color: #94a3b8;'>Nearby Wells Intelligence System</h3>", unsafe_allow_html=True)
+        st.markdown("<h4 style='text-align: center; color: #cbd5e1; margin-top: 15px;'>Login</h4>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            with st.form("login_form"):
+                identifier = st.text_input("Username or Email")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Login", use_container_width=True)
+                
+                if submitted:
+                    import api_client
+                    token_data = api_client.login_user(identifier, password)
+                    if token_data and "access_token" in token_data:
+                        valid_user = api_client.validate_token(token_data["access_token"])
+                        canonical_username = valid_user.get("username") if valid_user else identifier
+                        
+                        st.session_state["access_token"] = token_data["access_token"]
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"] = canonical_username
+                        st.session_state["_auth_action"] = "set"
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+            
+            if st.button("Don't have an account? Sign up", use_container_width=True):
+                st.session_state["auth_mode"] = "register"
+                st.rerun()
+
+    elif st.session_state["auth_mode"] == "register":
+        st.markdown("<h1 style='text-align: center; margin-top: 0px; margin-bottom: 5px; color: #f8fafc;'>GEOMINE</h1>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center; margin-top: 0px; color: #94a3b8;'>Nearby Wells Intelligence System</h3>", unsafe_allow_html=True)
+        st.markdown("<h4 style='text-align: center; color: #cbd5e1; margin-top: 15px;'>Create Account</h4>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            with st.form("register_form"):
+                new_username = st.text_input("Username")
+                new_email = st.text_input("Email")
+                new_password = st.text_input("Password", type="password")
+                confirm_password = st.text_input("Confirm Password", type="password")
+                submitted = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if submitted:
+                    import requests
+                    from config import BACKEND_URL
+                    import re
+                    
+                    if not new_username or not new_email or not new_password or not confirm_password:
+                        st.error("All fields are required")
+                    elif not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
+                        st.error("Invalid email format")
+                    elif new_password != confirm_password:
+                        st.error("Passwords do not match")
+                    elif len(new_password) < 8:
+                        st.error("Password must be at least 8 characters")
+                    else:
+                        try:
+                            resp = requests.post(f"{BACKEND_URL}/api/auth/register", json={
+                                "username": new_username,
+                                "email": new_email,
+                                "password": new_password
+                            })
+                            if resp.status_code == 201:
+                                st.success("User registered successfully. Please login.")
+                            else:
+                                try:
+                                    err = resp.json().get("detail", "Registration failed")
+                                except:
+                                    err = "Registration failed"
+                                st.error(err)
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"Error connecting to backend: {e}")
+            
+            if st.button("Already have an account? Login", use_container_width=True):
+                st.session_state["auth_mode"] = "login"
+                st.rerun()
+
+    st.stop()
+
 
 # =====================================================================
 # 2. HIGH-READABILITY INDUSTRIAL STYLING (SIH Presentation Standard)
@@ -36,26 +190,11 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Hide Streamlit Header, Deploy Button, and Footer */
-    header { visibility: hidden !important; }
-    #MainMenu { visibility: hidden !important; }
-    footer { visibility: hidden !important; }
-    .stDeployButton { display: none !important; }
-
     /* Global Base & Typography */
     .stApp {
         background-color: #080c14;
         color: #f1f5f9;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    }
-
-    /* Container Margin Reduction (Removes excessive empty padding) */
-    .block-container {
-        padding-top: 1.2rem !important;
-        padding-bottom: 2rem !important;
-        padding-left: 1.8rem !important;
-        padding-right: 1.8rem !important;
-        max-width: 100% !important;
     }
 
     /* Top Mission Control Header */
@@ -370,6 +509,32 @@ available_formations = ["Kopili Shale", "Girujan Clay", "Barail Coal-Shale", "La
 # 4. SIDEBAR CONFIGURATION (Well & Real-Time Operational Controls)
 # =====================================================================
 
+with st.sidebar:
+    col1, col2 = st.columns([1.5, 1], gap="small")
+    with col1:
+        username = st.session_state.get('username', 'Unknown')
+        svg_avatar = '''<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>'''
+        
+        st.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                <div style="width: 32px; height: 32px; background-color: #1e293b; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid #334155; flex-shrink: 0;">
+                    {svg_avatar}
+                </div>
+                <div style="display: flex; flex-direction: column; overflow: hidden; justify-content: center;">
+                    <span style="font-size: 14px; font-weight: 800; color: #f8fafc; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{username}</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        if st.button("Logout", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.session_state.pop("access_token", None)
+            st.session_state["_auth_action"] = "clear"
+            st.rerun()
+            
+    st.markdown('<hr style="margin: 8px 0px 16px 0px; border: none; border-top: 1px solid #1e293b;" />', unsafe_allow_html=True)
+
+
 with st.sidebar.form("drilling_parameters_form"):
     st.markdown("###  Spatial & Geological Parameters")
 
@@ -464,7 +629,6 @@ with st.sidebar.form("drilling_parameters_form"):
 
 with st.sidebar:
     # Live Rig Simulator
-    st.markdown("---")
     st.markdown("####  Real-Time eRTMAC Simulator")
     
     def on_sim_toggle():
